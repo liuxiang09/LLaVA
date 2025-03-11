@@ -787,32 +787,44 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
 
 def train(attn_implementation=None):
     global local_rank
-
+    # 解析命令行参数，该类的作用是将命令行参数解析为dataclass对象。
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments))
+    # 解析命令行参数，将解析结果保存到model_args、data_args和training_args三个变量中。
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
+    # 接着配置训练精度，简单来说就是按照优先级选择: fp16 → bfloat16 → float32
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}
+    # 如果使用4位或8位的量化，涉及到QLoRA，需要设置相应的参数
     if training_args.bits in [4, 8]:
         from transformers import BitsAndBytesConfig
         bnb_model_from_pretrained_args.update(dict(
             device_map={"": training_args.device},
-            load_in_4bit=training_args.bits == 4,
-            load_in_8bit=training_args.bits == 8,
+            load_in_4bit=training_args.bits == 4,   # 是否加载4位量化模型
+            load_in_8bit=training_args.bits == 8,   # 是否加载8位量化模型
             quantization_config=BitsAndBytesConfig(
                 load_in_4bit=training_args.bits == 4,
                 load_in_8bit=training_args.bits == 8,
-                llm_int8_skip_modules=["mm_projector"],
+                llm_int8_skip_modules=["mm_projector"], # 模块`mm_projector`不进行量化
+                # 量化阈值设置。
+                # 如果一个模型的权重或激活值在绝对值上小于 llm_int8_threshold，那么这些值将被量化为8位整形以减少内存使用。
+                # 如果值的绝对值大于 llm_int8_threshold 则会继续一浮点数的形式存储，保留更多的精度。
                 llm_int8_threshold=6.0,
+                # llm_int8_has_fp16_weight用于设置LLM.int8()是否使用16位主权重。
+                # 该参数控制权重是否在反向传播时进行转换。
                 llm_int8_has_fp16_weight=False,
+                # bnb_4bit_compute_dtype设置量化模型的计算数据类型
                 bnb_4bit_compute_dtype=compute_dtype,
+                # bnb_4bit_use_double_quant设置是否使用嵌套量化。
+                # 这将会在第一轮量化之后启用第二轮量化，以便每个参数额外节省 0.4 比特。
                 bnb_4bit_use_double_quant=training_args.double_quant,
+                # bnb_4bit_quant_type设置量化数据类型。可以是'fp4'或'nf4'。
                 bnb_4bit_quant_type=training_args.quant_type # {'fp4', 'nf4'}
             )
         ))
-
+    # 模型权重加载
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -840,15 +852,15 @@ def train(attn_implementation=None):
             **bnb_model_from_pretrained_args
         )
     model.config.use_cache = False
-
+    # 冻结模型中需要冻结的部分
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
-
+    # 通过 peft 库的 prepare_model_for_kbit_training 方法让量化模型变成可lora训练：
     if training_args.bits in [4, 8]:
         from peft import prepare_model_for_kbit_training
         model.config.torch_dtype=(torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
-
+    # 设置保留需要的梯度：如果模型有 enable_input_require_grads 方法，调用该方法，否则通过注册钩子函数实现
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
@@ -856,7 +868,7 @@ def train(attn_implementation=None):
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
+    # 之后就根据设置的LoRA参数对模型进行改造了。主要是调用了peft库的 get_peft_model 函数
     if training_args.lora_enable:
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
@@ -873,6 +885,7 @@ def train(attn_implementation=None):
             if training_args.fp16:
                 model.to(torch.float16)
         rank0_print("Adding LoRA adapters...")
+        # 通过 get_peft_model 函数，将模型转换为 LoRA 模型
         model = get_peft_model(model, lora_config)
 
     if 'mpt' in model_args.model_name_or_path:
@@ -956,8 +969,11 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
+    # 通过调用 make_supervised_data_module 函数，得到训练数据集和数据处理器
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+    
+    # 使用LLaVA Trainer进行训练
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,

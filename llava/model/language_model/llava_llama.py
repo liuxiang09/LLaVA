@@ -40,34 +40,35 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 
 class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     config_class = LlavaConfig
-
+    # 模型初始化
     def __init__(self, config):
         super(LlamaForCausalLM, self).__init__(config)
-        self.model = LlavaLlamaModel(config)
-        self.pretraining_tp = config.pretraining_tp
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.model = LlavaLlamaModel(config)    # 设置基础模型
+        self.pretraining_tp = config.pretraining_tp # 配置预训练参数
+        self.vocab_size = config.vocab_size # 词表大小
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False) # 语言模型头部 
 
         # Initialize weights and apply final processing
         self.post_init()
 
     def get_model(self):
         return self.model
-
+    
+    # 向前传播方法：支持多模态输入处理，在处理文本输入前会先处理图像输入，通过 prepare_inputs_labels_for_multimodal 方法处理多模态输入
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        images: Optional[torch.FloatTensor] = None,
-        image_sizes: Optional[List[List[int]]] = None,
-        return_dict: Optional[bool] = None,
+        input_ids: torch.LongTensor = None,                             # 输入文本的 token id
+        attention_mask: Optional[torch.Tensor] = None,                  # 注意力掩码
+        position_ids: Optional[torch.LongTensor] = None,                # 位置编码
+        past_key_values: Optional[List[torch.FloatTensor]] = None,      # 用于存储过去的键值对
+        inputs_embeds: Optional[torch.FloatTensor] = None,              # 输入的嵌入向量
+        labels: Optional[torch.LongTensor] = None,                      # 标签
+        use_cache: Optional[bool] = None,                               # 是否使用缓存     
+        output_attentions: Optional[bool] = None,                       # 是否输出注意力权重
+        output_hidden_states: Optional[bool] = None,                    # 是否输出隐藏状态
+        images: Optional[torch.FloatTensor] = None,                     # 图像输入
+        image_sizes: Optional[List[List[int]]] = None,                  # 图像尺寸
+        return_dict: Optional[bool] = None,                             # 是否返回字典
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         if inputs_embeds is None:
@@ -100,17 +101,18 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict
         )
-
+    # 生成方法：实现了条件文本生成功能，支持图文多模态输入，处理位置编码和注意力掩码
     @torch.no_grad()
     def generate(
         self,
         inputs: Optional[torch.Tensor] = None,
         images: Optional[torch.Tensor] = None,
         image_sizes: Optional[torch.Tensor] = None,
-        **kwargs,
+        **kwargs,   # 其他参数
     ) -> Union[GenerateOutput, torch.LongTensor]:
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
+        # 检查是否有inputs_embeds参数，如果有则抛出异常
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
@@ -122,7 +124,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 _,
                 inputs_embeds,
                 _
-            ) = self.prepare_inputs_labels_for_multimodal(
+            ) = self.prepare_inputs_labels_for_multimodal(  # 处理多模态输入：提取图像特征，将图像特征与文本输入进行对齐，生成相应的位置编码和注意力掩码
                 inputs,
                 position_ids,
                 attention_mask,
@@ -131,9 +133,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 images,
                 image_sizes=image_sizes
             )
-        else:
+        else:       # 如果没有图像输入，则直接使用embed_tokens方法获取文本的嵌入向量
             inputs_embeds = self.get_model().embed_tokens(inputs)
-
+        
+        # 调用父类的generate方法生成文本
         return super().generate(
             position_ids=position_ids,
             attention_mask=attention_mask,
@@ -143,16 +146,16 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):
-        images = kwargs.pop("images", None)
-        image_sizes = kwargs.pop("image_sizes", None)
-        inputs = super().prepare_inputs_for_generation(
+        images = kwargs.pop("images", None)     # 获取图像输入
+        image_sizes = kwargs.pop("image_sizes", None)       # 获取图像尺寸
+        inputs = super().prepare_inputs_for_generation(     # 调用父类的prepare_inputs_for_generation方法
             input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-        if images is not None:
+        if images is not None:          # 如果有图像输入，则将图像输入添加到inputs中
             inputs['images'] = images
-        if image_sizes is not None:
+        if image_sizes is not None:     # 如果有图像尺寸，则将图像尺寸添加到inputs中
             inputs['image_sizes'] = image_sizes
         return inputs
 
-AutoConfig.register("llava_llama", LlavaConfig)
-AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)
+AutoConfig.register("llava_llama", LlavaConfig)                     # 注册配置类
+AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)   # 注册模型类

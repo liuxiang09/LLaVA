@@ -14,9 +14,10 @@ import os
 #     model_name=get_model_name_from_path(model_path)
 # )
 
-model_path = "liuhaotian/llava-v1.5-7b"
-prompt = "What are the things I should be cautious about when I visit here?"
-image_file = "https://llava-vl.github.io/static/images/view.jpg"
+# model_path = "liuhaotian/llava-v1.5-7b"
+model_path = "/home/hpc/Desktop/LLaVA/models/llava-v1.5-7b"
+prompt = "What is this ?"
+image_file = "/home/hpc/Desktop/LLaVA/images/llava_logo.png"
 args = type('Args', (), {
     "model_path": model_path,
     "model_base": None,

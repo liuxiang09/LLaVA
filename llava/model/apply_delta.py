@@ -10,6 +10,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from llava import LlavaLlamaForCausalLM
 
 
+# 合并预训练模型和差分权重
 def apply_delta(base_model_path, target_model_path, delta_path):
     print("Loading base model")
     base = AutoModelForCausalLM.from_pretrained(

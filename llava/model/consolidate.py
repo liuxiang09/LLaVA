@@ -10,6 +10,7 @@ from llava.model import *
 from llava.model.utils import auto_upgrade
 
 
+# 合并预训练模型和差分权重
 def consolidate_ckpt(src_path, dst_path):
     print("Loading model")
     auto_upgrade(src_path)
