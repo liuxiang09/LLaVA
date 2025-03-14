@@ -114,6 +114,8 @@ def unpad_image(tensor, original_size):
     original_aspect_ratio = original_width / original_height
     current_aspect_ratio = current_width / current_height
 
+    # 如果原始宽高比大于当前宽高比，则按照宽度缩放
+    # 否则按照高度缩放
     if original_aspect_ratio > current_aspect_ratio:
         scale_factor = current_width / original_width
         new_height = int(original_height * scale_factor)
@@ -146,25 +148,28 @@ class LlavaMetaForCausalLM(ABC):
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
         images, image_sizes=None
     ):
-        vision_tower = self.get_vision_tower()
+        vision_tower = self.get_vision_tower()\
+        # 如果 vision_tower 为空或者 images 为空或者 input_ids 的长度为 1，则直接返回输入
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
-
+        # 如果 images 是列表或者 images 的维度为 5，则将 images 转换为张量
         if type(images) is list or images.ndim == 5:
             if type(images) is list:
-                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
-            concat_images = torch.cat([image for image in images], dim=0)
-            image_features = self.encode_images(concat_images)
-            split_sizes = [image.shape[0] for image in images]
-            image_features = torch.split(image_features, split_sizes, dim=0)
-            mm_patch_merge_type = getattr(self.config, 'mm_patch_merge_type', 'flat')
+                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]  # 维度为 3 的张量添加一个维度
+            concat_images = torch.cat([image for image in images], dim=0)  # dim=0表示在第 0 维度上拼接
+            image_features = self.encode_images(concat_images)  # 编码图像
+            split_sizes = [image.shape[0] for image in images]  # 获取每个图像的长度
+            image_features = torch.split(image_features, split_sizes, dim=0)  # 按照 split_sizes 切分张量
+            mm_patch_merge_type = getattr(self.config, 'mm_patch_merge_type', 'flat') # 三种拼接方式：flat、spatial、spatial_unpad
             image_aspect_ratio = getattr(self.config, 'image_aspect_ratio', 'square')
+            # 将图像特征展平
             if mm_patch_merge_type == 'flat':
-                image_features = [x.flatten(0, 1) for x in image_features]
+                image_features = [x.flatten(0, 1) for x in image_features] # 将第 0 和第 1 维度合并
+            # spatial 表示空间拼接
             elif mm_patch_merge_type.startswith('spatial'):
                 new_image_features = []
                 for image_idx, image_feature in enumerate(image_features):
-                    if image_feature.shape[0] > 1:
+                    if image_feature.shape[0] > 1: # 如果图像特征的长度大于 1
                         base_image_feature = image_feature[0]
                         image_feature = image_feature[1:]
                         height = width = self.get_vision_tower().num_patches_per_side
@@ -174,6 +179,7 @@ class LlavaMetaForCausalLM(ABC):
                             image_feature = image_feature.view(num_patch_height, num_patch_width, height, width, -1)
                         else:
                             raise NotImplementedError
+                        # 对图像特征进行未填充处理
                         if 'unpad' in mm_patch_merge_type:
                             image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
                             image_feature = image_feature.flatten(1, 2).flatten(2, 3)
@@ -186,6 +192,7 @@ class LlavaMetaForCausalLM(ABC):
                         else:
                             image_feature = image_feature.permute(0, 2, 1, 3, 4).contiguous()
                             image_feature = image_feature.flatten(0, 3)
+                        # 合并全局特征和局部特征
                         image_feature = torch.cat((base_image_feature, image_feature), dim=0)
                     else:
                         image_feature = image_feature[0]
@@ -194,6 +201,7 @@ class LlavaMetaForCausalLM(ABC):
                                 image_feature,
                                 self.model.image_newline[None].to(image_feature.device)
                             ), dim=0)
+                    # 将处理后的图像特征添加到 new_image_features 中
                     new_image_features.append(image_feature)
                 image_features = new_image_features
             else:
@@ -212,10 +220,12 @@ class LlavaMetaForCausalLM(ABC):
         _labels = labels
         _position_ids = position_ids
         _attention_mask = attention_mask
+        # 如果 attention_mask 为空，则创建一个与 input_ids 相同大小的张量
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
         else:
             attention_mask = attention_mask.bool()
+        # 如果 position_ids 为空，则创建一个与 input_ids 相同大小的张量
         if position_ids is None:
             position_ids = torch.arange(0, input_ids.shape[1], dtype=torch.long, device=input_ids.device)
         if labels is None:
